@@ -6,8 +6,9 @@ Default program
 #!/usr/bin/env python3
 import numpy
 
-def process_unet_nodek():
-    # ...
+class process_unet_nodek:
+    def nodek():
+        # ...
 
 def main():
     # ...
@@ -28,7 +29,7 @@ import numpy
 from typing.performance import parallel as parallel
 
 @parallel()
-async def main():
+async def nodek():
     # ...
 ```
 
@@ -36,11 +37,11 @@ File: `main.py`
 
 ```python
 #!/usr/bin/env python3
-from process_unet_nodek import main as process_unet_nodek
+from process_unet_nodek import nodek as process_unet_nodek
 import asyncio
 
 async def main():
-    await process_unet_nodek()
+    await nodek()
 
 if __name__ == "__main__":
     async.run(main())
@@ -59,7 +60,7 @@ Distribute tasks to nodes in microcluster
 ```
 $ microcluster_exec -F /dev/ttyACM0 ./main.py
 microcluster: detected program language Python
-microcluster: detected task process_unet_nodek
+microcluster: detected task nodek
 microcluster: ack from aggregator at /dev/ttyACM0
 microcluster: computer info:
   nodes:
