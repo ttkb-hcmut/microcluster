@@ -10,6 +10,7 @@ let green  x = "\x1B[0;32m" ^ x ^ reset
 let yellow x = "\x1B[0;33m" ^ x ^ reset
 let blue   x = "\x1B[0;34m" ^ x ^ reset
 let purple x = "\x1B[0;35m" ^ x ^ reset
+let magenta x = "\x1B[0;35m" ^ x ^ reset
 let cyan   x = "\x1B[0;36m" ^ x ^ reset
 let white  x = "\x1B[0;37m" ^ x ^ reset
 
@@ -19,6 +20,7 @@ let bold_green  x = "\x1B[1;32m" ^ x ^ reset
 let bold_yellow x = "\x1B[1;33m" ^ x ^ reset
 let bold_blue   x = "\x1B[1;34m" ^ x ^ reset
 let bold_purple x = "\x1B[1;35m" ^ x ^ reset
+let bold_magenta x = "\x1B[1;35m" ^ x ^ reset
 let bold_cyan   x = "\x1B[1;36m" ^ x ^ reset
 let bold_white  x = "\x1B[1;37m" ^ x ^ reset
 

@@ -3,6 +3,7 @@ open Microcluster_exec
 let with_open_in ~cwd ~namespace f =
   let open Eio in
   let dir = Path.(cwd / namespace) in
+  Path.rmtree ~missing_ok:true dir;
   Path.mkdirs ~exists_ok:false ~perm:0o700 dir;
   f dir |> fun ret ->
   Path.rmtree dir;
@@ -35,12 +36,12 @@ end
 
 module Z (CUser : Clientside) = struct open CUser let f (module Lo : Interceptor) =
   let module X = Fs_socket__client.X(CUser) in
+  let kwargs = object method all_ = [] end in
   X.f >>=
-  let* parallel_decorator_factory = def0 () ~kwargs:object method all_ = [] end @@ fun () ~kwargs:_ ->
-    let* parallel = def1 () ~kwargs:object method all_ = [] end @@ fun func ~kwargs:_ ->
+  let* parallel_decorator_factory = def0 () ~kwargs @@ fun () ~kwargs:_ ->
+    let* parallel = def1 () ~kwargs @@ fun func ~kwargs:_ ->
       let* wrapper = def_varargs @@ fun args kwargs ->
-        let+ os = import (module Os) in
-        let module Os = Os.M(val os) in
+        let%py__mod (module Os) = import (module Os) in
         if_ (is (Os.getenv @@ string "MICROCLUSTER_ENV") none) begin fun () ->
           let func = mkfunc_varargs func in
           let open Spreading in
@@ -209,11 +210,11 @@ let _'rpc'eval env request =
           (Fpath.v (Path.native_exn file)))
       ~dest:(`remote (`mpy, Fpath.(v (request.module_name ^ ".py") )))
   end;
-  let conn () =
+  let conn function_name =
     Mpremote.Commands.parse_out ~process_mgr Mpremote.Command.
       [ Exec (Printf.sprintf "import %s" request.module_name)
       ; Exec (Printf.sprintf "import asyncio")
-      ; Eval (Printf.sprintf "asyncio.run(%s.%s())" request.module_name request.function_name)
+      ; Eval (Printf.sprintf "asyncio.run(%s.%s())" request.module_name function_name)
       ] in
   conn
 
@@ -226,9 +227,7 @@ let _'rpc'eval =
   let open Request in
   ( Mutex.use_rw ~protect:true mutex @@ fun () ->
     match Hashtbl.find trn_cachemap request.module_name with
-  | cached_trn, ((), cached_funname) ->
-    if not (String.equal cached_funname request.function_name)
-    then failwith {|each module must have only ONE function export|};
+  | cached_trn, ((), ()) ->
     cached_trn
   | exception Not_found ->
     let { module_name; _ } = request in
@@ -236,11 +235,11 @@ let _'rpc'eval =
     ( Fiber.fork_promise ~sw @@ fun () ->
       _'rpc'eval env request
     ) |> fun cache_trn ->
-    Hashtbl.add trn_cachemap module_name (cache_trn, ((), request.function_name));
+    Hashtbl.add trn_cachemap module_name (cache_trn, ((), ()));
     cache_trn
   )
   |> Promise.await_exn
-  |> fun fn -> fn ()
+  |> fun fn -> fn request.function_name
   |> Response.make
 
 module Micropython_default_rpc : Controller.RPC = struct
@@ -261,14 +260,7 @@ let main command
 ~device:_ ~device_driver ~verbose =
   Eio_main.run @@ fun env ->
   let env = object
-    method cwd = env#cwd
-    method fs = env#fs
-    method process_mgr = env#process_mgr
-
-    method domain_name = Microcluster_exec.Lib.domain_name
-    method verbose = verbose
-    method stderr  = env#stderr
-    method err = Some (Format.eio__err_formatter env)
+    method cwd = env#cwd method fs = env#fs method process_mgr = env#process_mgr method domain_name = Microcluster_exec.Lib.domain_name method verbose = verbose method stderr  = env#stderr method err = Some (Format.eio__err_formatter env)
   end in
   ( [%with_report {|detected program language <enum>{Language}</enum>|}] @@ fun () ->
     Detect_language.parse command ~cwd:(Stdenv.cwd env)
@@ -277,30 +269,23 @@ let main command
     | `LanguagePython as x -> x
   ) |> ignore;
   let module Rpc =
-    ( val
-      match device_driver with
-      | "generic_micropython" -> (module Micropython_default_rpc)
-      | x -> Controller_make.dynamic x
-      : Controller.RPC ) in
+    ( val match device_driver with
+    | "generic_micropython" -> (module Micropython_default_rpc)
+    | x -> Controller_make.dynamic x : Controller.RPC ) in
   [%report0 "computer info:\n  nodes:\n    <name>{device_driver}</name>\n    <prepos>total</prepos> <number>1</number>"];
-  let vardir  = Path.
-    ( Stdenv.fs env
-      / Sys.getenv "HOME"
-      / ".var" ) in
+  let vardir = Path.(Stdenv.fs env / Sys.getenv "HOME" / ".var") in
   Fs_socket.Namespace.with_open_in ~vardir @@ fun socket ->
   Switch.run @@ fun sw ->
   ( Fiber.fork_daemon ~sw @@ fun () ->
     let module Fs = Fs_socket in
-    socket |> Fs.Namespace_watch.iter
+    ignore @@ Fs.Namespace_watch.iter
       ~process_mgr:(Stdenv.process_mgr env)
-      ~i:(module Rpc.Input)
-      ~o:(module Rpc.Result)
+      ~i:(module Rpc.Input) ~o:(module Rpc.Result)
       begin fun x ->
-      Fs.Socket.reply x @@ fun inp ->
-      let env = (env :> Controller.env) in
-      Rpc.eval inp ~env
-      end
-    |> ignore;
+        Fs.Socket.reply x @@ fun inp ->
+        let env = (env :> Controller.env) in
+        Rpc.eval inp ~env
+      end @@ socket;
     `Stop_daemon
   );
   ( Fiber.fork ~sw @@ fun () ->
@@ -311,81 +296,49 @@ let main command
       begin fun%functor (module C : Clientside) ~func () ->
       let module Server__fs_socket = Fs_socket in
       let open C in
-      let s_ = string in
-      let+ ast = import (module Ast) in
-      let module Ast = Ast.M(val ast) in
-      let+ os = import (module Os) in
-      let module Os = Os.M(val os) in
+      let%py__mod (module Ast) = import (module Ast) in
+      let%py__mod (module Os) = import (module Os) in
       let* resp = ref @@ await @@
         let func = Function.v2 !func in
-        Fs_socket.fetch (s_ (Server__fs_socket.Socket.session_name socket)) (Dict.of_assoc__single_t [string "function_name", Function.r__name__ func; string "module_name", Function.r__module__ func; string "cwd", Os.getcwd ()]) () in
-      let* lol = ref @@ Dict.(!. !resp (s_ "return_value") ) in
-      let- lol = assert__isinstance lol klass__string in
-      let* xx = ref @@ Ast.literal_eval !lol in
-      return !xx
+        let a = Dict.of_assoc__single_t
+          [ string "function_name", Function.r__name__ func
+          ; string "module_name", Function.r__module__ func
+          ; string "cwd", Os.getcwd () ] in
+        Fs_socket.fetch (string (Server__fs_socket.Socket.session_name socket)) a () in
+      let* retval = ref @@ Dict.(!. !resp (string "return_value") ) in
+      let- retval' = assert__isinstance retval klass__string in
+      let* expr = ref @@ Ast.literal_eval !retval' in
+      return !expr
       end
   )
 
 open Cmdliner
 
+let ( %> ) f1 f2 = fun s -> f2 (f1 s)
+
 let main =
-  Cmd.v
-  ( Cmd.info Microcluster_exec.Lib.domain_name
-    ~doc:
-    " A Python / OCaml interpreter that dissects your program and
-    orchestrates distributable tasks to a micro-cluster. "
-  ) @@
+  Cmd.make (Cmd.info Microcluster_exec.Lib.domain_name
+    ~doc:" A Python / OCaml interpreter that dissects your program and orchestrates distributable tasks to a micro-cluster. ") @@
   let open Term.Syntax in
-  let+ device =
-    Arg.
-    ( value
-    & opt string "/dev/ttyACM0"
-    & info ["F"; "file"]
-      ~doc:
-      " Open and use the specific $(docv). "
-      ~docv:"DEVICE"
-    )
-  and+ device_driver =
-    Arg.
-    ( value
-    & opt string "generic_micropython"
-    & info ["D"; "device-driver"]
-      ~doc:
-      " Use the specific $(docv). "
-      ~docv:"DEVICE_DRIVER"
-    )
-  and+ command =
-    Arg.
-    ( value
-    & pos_all string []
-    & info []
-      ~doc:
-      " Command for executing the program script. "
-      ~docv:"COMMAND"
-    )
-  and+ verbose =
-    Arg.
-    ( value
-    & flag
-    & info ["verbose"]
-      ~doc:
-      " Increases the level of verbosity of diagnostic messages printed on
-      standard error. "
-      ~docv:"VERBOSE"
-    ) in
-  let command =
-    command
-    |> Command.parse_opt
-    |> Option.unwrap
-      ~error_msg:
-      " command should not be empty " in
-  main
+  let+ device = Arg.(value & opt string "/dev/ttyACM0"
+    & info ["F"; "file"] ~docv:"DEVICE"
+      ~doc:" Open and use the specific $(docv). " )
+  and+ device_driver = Arg.(value & opt string "generic_micropython"
+    & info ["D"; "device-driver"] ~docv:"DEVICE_DRIVER"
+      ~doc:" Use the specific $(docv). " )
+  and+ command = Arg.(value & pos_all string []
+    & info [] ~docv:"COMMAND"
+      ~doc:" Command for executing the program script. " )
+    |> Term.map ( Command.parse_opt %> Option.unwrap
+      ~error_msg:" command should not be empty " )
+  and+ verbose = Arg.(value & flag
+    & info ["verbose"] ~docv:"VERBOSE"
+      ~doc:" Increases the level of verbosity of diagnostic messages printed on standard error. " )
+  in main
     ~device ~device_driver ~verbose
     command
 
 let () =
+  let err = Format.err_formatter in
   if !Sys.interactive then () else
-  Cmd.eval
-    ~err:Format.err_formatter
-    main
-  |> exit
+  Cmd.eval ~err main |> exit

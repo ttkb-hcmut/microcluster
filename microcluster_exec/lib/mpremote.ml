@@ -26,7 +26,7 @@ let run (file: remote_file) =
   Mutex.use_ro mutex @@ fun () ->
   Process.parse_out
     process_mgr
-    Eio.Buf_read.line
+    Eio.Buf_read.take_all
     [ "mpremote"
     ; "run"
     ; file
@@ -56,7 +56,7 @@ module Commands = struct
     let open Eio in
     try
     Mutex.use_ro mutex @@ fun () ->
-    Process.parse_out process_mgr Buf_read.line
+    Process.parse_out process_mgr Buf_read.take_all
       begin
         [ "mpremote" ]
         @ (cmds |> List.map Command.to_string_parts |> List.flatten)

@@ -1,5 +1,7 @@
 ## Roadmap
 
+> Warning: except checkpoints that are done, all planned checkpoints are hot text and subject to change.
+
 | Checkpoint | Summary |
 | ---------- | ------- |
 | version 0.8 | working prototype with design icks |
